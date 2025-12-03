@@ -9,20 +9,22 @@ from google.protobuf.message import DecodeError
 
 app = Flask(__name__)
 
-# This code create by jobayar ahmed 
-# This code create by jobayar ahmed 
-# This code create by jobayar ahmed 
-# This code create by jobayar ahmed 
-
 ACCOUNTS_FILE = 'accounts.json'
+TOKEN_API = "https://jwt-nu-virid.vercel.app/token"
 
-# ✅ Download accounts
+
+# -------------------------------------
+# Load accounts
+# -------------------------------------
 def load_accounts():
     return json.load(open(ACCOUNTS_FILE)) if os.path.exists(ACCOUNTS_FILE) else {}
 
-# ✅ Fetch tokens from API
+
+# -------------------------------------
+# Fetch token
+# -------------------------------------
 async def fetch_token(session, uid, password):
-    url = f"https://jwt-nu-virid.vercel.app/token?uid={uid}&password={password}"
+    url = f"{TOKEN_API}?uid={uid}&password={password}"
     try:
         async with session.get(url, timeout=10) as res:
             if res.status == 200:
@@ -39,7 +41,10 @@ async def fetch_token(session, uid, password):
         return None
     return None
 
-# ✅ Bring all the tokens
+
+# -------------------------------------
+# Get token list
+# -------------------------------------
 async def get_tokens_live():
     accounts = load_accounts()
     tokens = []
@@ -49,24 +54,36 @@ async def get_tokens_live():
         tokens = [token for token in results if token]
     return tokens
 
-# ✅ Encryption
+
+# -------------------------------------
+# Encrypt (CBC)
+# -------------------------------------
 def encrypt_message(plaintext):
     key = b'Yg&tc%DEuh6%Zc^8'
     iv = b'6oyZDr22E3ychjM%'
     cipher = AES.new(key, AES.MODE_CBC, iv)
     return binascii.hexlify(cipher.encrypt(pad(plaintext, AES.block_size))).decode()
 
+
+# -------------------------------------
+# Protobuf builders
+# -------------------------------------
 def create_uid_proto(uid):
     pb = uid_generator_pb2.uid_generator()
     pb.saturn_ = int(uid)
     pb.garena = 1
     return pb.SerializeToString()
 
+
 def create_like_proto(uid):
     pb = like_pb2.like()
     pb.uid = int(uid)
     return pb.SerializeToString()
 
+
+# -------------------------------------
+# Decode protobuf
+# -------------------------------------
 def decode_protobuf(binary):
     try:
         pb = like_count_pb2.Info()
@@ -75,39 +92,37 @@ def decode_protobuf(binary):
     except DecodeError:
         return None
 
+
+# -------------------------------------
+# Make player info request
+# -------------------------------------
 def make_request(enc_uid, token):
     url = "https://clientbp.ggblueshark.com/GetPlayerPersonalShow"
     headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip",
-            'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'Expect': "100-continue",
-            'X-Unity-Version': "2018.4.11f1",
-            'X-GA': "v1 1",
-            'ReleaseVersion': "OB50"
-        }
+        'User-Agent': "Dalvik/2.1.0",
+        'Authorization': f"Bearer {token}",
+        'Content-Type': "application/x-www-form-urlencoded"
+    }
     try:
         res = requests.post(url, data=bytes.fromhex(enc_uid), headers=headers, verify=False)
+        if res.status_code != 200:
+            print("PLAYER INFO STATUS:", res.status_code)
+            return None
         return decode_protobuf(res.content)
     except:
         return None
 
-# ✅ Send one like
+
+# -------------------------------------
+# Send like
+# -------------------------------------
 async def send_request(enc_uid, token):
     url = "https://clientbp.ggblueshark.com/LikeProfile"
     headers = {
-            'User-Agent': "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
-            'Connection': "Keep-Alive",
-            'Accept-Encoding': "gzip",
-            'Authorization': f"Bearer {token}",
-            'Content-Type': "application/x-www-form-urlencoded",
-            'Expect': "100-continue",
-            'X-Unity-Version': "2018.4.11f1",
-            'X-GA': "v1 1",
-            'ReleaseVersion': "OB50"
-        }
+        'User-Agent': "Dalvik/2.1.0",
+        'Authorization': f"Bearer {token}",
+        'Content-Type': "application/x-www-form-urlencoded"
+    }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=bytes.fromhex(enc_uid), headers=headers) as r:
@@ -115,13 +130,16 @@ async def send_request(enc_uid, token):
     except:
         return None
 
-    # ✅ Send likes to all tokens
+
 async def send_likes(uid, tokens):
     enc_uid = encrypt_message(create_like_proto(uid))
     tasks = [send_request(enc_uid, token) for token in tokens]
     return await asyncio.gather(*tasks)
 
-# ✅ End Point
+
+# -------------------------------------
+# API: /like
+# -------------------------------------
 @app.route('/like', methods=['GET'])
 def like_handler():
     uid = request.args.get("uid")
@@ -132,6 +150,7 @@ def like_handler():
     if not tokens:
         return jsonify({"error": "No valid tokens available"}), 401
 
+    # Before like
     enc_uid = encrypt_message(create_uid_proto(uid))
     before = make_request(enc_uid, tokens[0])
     if not before:
@@ -141,9 +160,11 @@ def like_handler():
     likes_before = int(before_data.get("AccountInfo", {}).get("Likes", 0))
     nickname = before_data.get("AccountInfo", {}).get("PlayerNickname", "Unknown")
 
+    # Send likes
     responses = asyncio.run(send_likes(uid, tokens))
     success_count = sum(1 for r in responses if r == 200)
 
+    # After like
     after = make_request(enc_uid, tokens[0])
     likes_after = 0
     if after:
@@ -157,13 +178,14 @@ def like_handler():
         "LikesAfter": likes_after,
         "LikesGivenByAPI": likes_after - likes_before,
         "SuccessfulRequests": success_count,
-        "status": 1 if likes_after > likes_before else 2
+        "Status": 1 if likes_after > likes_before else 2
     })
+
 
 @app.route('/')
 def home():
-    return jsonify({"status": "online", "message": "Like API is running ✅"})
+    return jsonify({"status": "online", "message": "Like API running"})
 
-# ✅ This is not used in Vercel, but we leave it for local operation.
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
